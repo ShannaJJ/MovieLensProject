@@ -1,0 +1,615 @@
+
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+
+---
+title: 'Data Science: Capstone - MovieLens Project'
+author: "Shanna Jardim"
+date: "10/17/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## INTRODUCTION
+
+Due to the wealth of information available, recommendation systems have become more relevant and have developed in recent years as the online world of e-commerce and social media gather more and more data on user’s purchase patterns, user profiles, opinions, user ratings, browsing habits etc. 
+Recommendation systems provide suggestions to users based on their likes and dislikes, recommending items they want to buy or services they actually want to subscribe to. Major companies such a LinkedIn, Amazon, Netflix and Takealot utilise recommendation systems. 
+
+**The Netflix Prize** 
+In 2006 , Netflix ran an open competition for the best collaborative filtering algorithm to predict user ratings for films, based on previous ratings without any other information about the users or films
+
+## GOAL OF PROJECT
+
+This MovieLens projects aims to create a movie rating predictor using the **edx** dataset - which is created in the given code. The recommender system should be able to predict a users rating on a new movie. 
+The Root Mean Square Error (RMSE) will be used to evaluate the accuracy of the predictions to the true value in the **validation** set - which 10% of the full data set and is created in the given code
+
+## GIVEN CODE
+
+The work on this project needs to build on code that is already provided which I will not include in this Document
+```{r givencode , include=FALSE}
+
+##########################################################
+# Create edx set, validation set (final hold-out test set)
+##########################################################
+
+# Note: this process could take a couple of minutes
+
+library(readr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(gridExtra)
+library(dslabs)
+library(data.table)
+library(ggrepel)
+library(ggthemes)
+library(caret)
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+####### END OF GIVEN CODE#######################
+```
+
+## EXPLORING THE DATA
+In this section I will explore the data to uncover initial patterns, characteristics and points of interest and familiarize myself with information before doing any changes.
+
+```{r }
+# Check for any #NA Values
+anyNA(edx)
+```
+
+```{r}
+head(edx)
+```
+* **Observations**
++ The release year needs to be separated from the movie title
++ Timestamp format needs to be converted , this represents the rating date
++ The genres are in the same column need to be separated by the pipe “|”
++ The same movie entry might belong to more than one genre. 
++ Every distinct rating by a user is on a different row.
++ UserId, movieId are: quantitative - Discrete unique numbers.
++ Title and genres are: qualitative and not unique.
+
+```{r}
+unique(edx$rating)
+```
+There are 10 different rate scores. a rate is give by one user for one movie.
+
+```{r}
+summary(edx)
+```
+The rate mean 3.512 , Minimum rating is 1, Max is 5
+
+```{r}
+edx %>% summarize(n_users = n_distinct(userId) , n_movies = n_distinct(movieId))
+```
+Distinct number of users = 69878 and distinct number of movies = 10677.
+
+```{r}
+head(validation)
+```
+The validation set is the same format & contains the same columns as our training set and therefore we will perform the same data transformation on both training and test datasets
+
+## TRANSFORMATION OF THE DATA
+
+**String Extract**
+String Extract to extract the release year from title and store in a separate field
+```{r }
+edx <- edx %>% 
+  mutate(releaseyear = as.numeric(str_extract(str_extract(title, 
+                                        "[/(]\\d{4}[/)]$"), regex("\\d{4}"))))
+
+# Do the same for the Validation Dataset
+validation <- validation %>% 
+  mutate(releaseyear = as.numeric(str_extract(str_extract(title,
+                                      "[/(]\\d{4}[/)]$"), regex("\\d{4}"))))
+```
+
+**Timestamp Change**
+Change the format of the rate timestamp to date and store only the year.
+```{r}
+#change format
+edx <- edx %>% mutate(timestamp = as.POSIXct(timestamp, 
+                                    origin = "1970-01-01",  tz = "GMT"))
+
+#get the rate year
+edx$timestamp <- format(edx$timestamp, "%Y")
+
+#same for validation set
+validation <- validation %>% 
+  mutate(timestamp = as.POSIXct(timestamp, origin = "1970-01-01", tz = "GMT"))
+validation$timestamp <- format(validation$timestamp, "%Y")
+```
+
+**Age of movie**
+Add the Age of the movie (This year minus releasyear).
+```{r}
+edx <- edx %>% mutate(movie_age = 2020 - releaseyear)
+
+validation <- validation %>% mutate(movie_age = 2020 - releaseyear)
+```
+
+**View the changes**
+```{r}
+head(edx)
+head(validation)
+```
+
+## VISUALISING THE DATA
+
+### Genre Analysis
+Creation of a new dataframe with useful measures to identify outliers and further analyse the data 
+```{r }
+edx_genre_measures  <- edx %>% 
+  separate_rows(genres, sep = "\\|") %>% group_by(genres) %>% 
+  summarize(Ratings_perGenre_Sum = n(), 
+            Ratings_perGenre_Avg = mean(rating), 
+            Movies_perGenre_Sum = n_distinct(movieId), 
+            Users_perGenre_Sum = n_distinct(userId))
+edx_genre_measures[order(-edx_genre_measures$Movies_perGenre_Sum), ]
+```
+
+```{r , echo=FALSE}
+edx_genre_measures %>% 
+  ggplot( aes(x = Ratings_perGenre_Sum,
+              y=reorder(genres, Ratings_perGenre_Sum ) ))+
+        geom_bar(aes(fill =genres),stat = "identity")+ 
+        xlab("Sum of Ratings")+  ylab("Genres") +
+        labs(title = " No. of Rating for per Genre")+
+        scale_x_continuous(labels = scales::comma)+
+        theme(axis.text.x  = element_text(angle= 90, vjust = 50 ))+
+        theme_light()
+```
+* **Observations**
++19 distinct genres
++Drama is the most rated genre = 3 910 127
++Comedy & Action – 2nd & 3rd highest
++IMAX least amount of ratings – could be due to the time of this dataset - IMAX was still new 
++There are also movies that have no genres
++Genre may be used as a good predictor but will look at genre over the release year
+
+**Outlier** -  One movie with no genre with only 7 users who rated this is considered an outlier 
+If using Genre as a predictor removing this row may yield better results.
+
+```{r }
+edx_genre_measures <- subset(edx_genre_measures, genres != "(no genres listed)")
+edx_genre_measures
+```
+Some genres have very low sums of ratings – Will check the correlation between sums of rating and the rating mean
+
+```{r , echo=FALSE}
+edx_genre_measures  %>%
+    ggplot(aes(Ratings_perGenre_Sum, Ratings_perGenre_Avg)) +
+     geom_point() +
+     theme_hc() + 
+  geom_smooth() +
+  scale_x_continuous(labels = scales::comma)+
+     ggtitle("Ratings_perGenre_Sum vs. Avg Rating")
+```
+We can clearly see in this graph that the lower the Sum of Ratings the higher the Average Rate.
+
+**Outlier** 
+These values can be treated as outliers as there is a slight bias due to not enough people rating the movie, however I will not remove this data as it is needed
+
+```{r }
+#Create same metrix for the validation set.
+
+validation_genre_measures <- validation %>% 
+  separate_rows(genres, sep = "\\|") %>% 
+  group_by(genres) %>% 
+  summarize(Ratings_perGenre_Sum = n(), 
+            Ratings_perGenre_Avg = mean(rating), 
+            Movies_perGenre_Sum = n_distinct(movieId), 
+            Users_perGenre_Sum = n_distinct(userId))
+
+validation_genre_measures[order(-validation_genre_measures$Movies_perGenre_Sum), ]
+```
+
+### Rating Distribution
+
+```{r , echo=FALSE}
+ edx %>% 
+     ggplot(aes(rating)) + 
+     geom_histogram(binwidth=0.2 , color="black", fill="light blue") + 
+    labs(title = "Rating Distribution", 
+          x = "Ratings Scale", y = "Sum Of Rating")
+```
+
+### Movie Dimension
+
+Number of rating per movies
+```{r}
+ edx %>% count(movieId) %>% ggplot(aes(n))+
+   geom_histogram(binwidth=0.2 ,color = "black" , fill= "light blue")+
+   scale_x_log10()+
+   ggtitle("No. of Ratings Per Movie")+
+   theme_gray()
+```
+Some movies get rated more than others, indicating some movies may be more popular than others.
+I will add this to the training set and test set – Number of ratings per movie
+
+```{r}
+edx <- edx %>% group_by(movieId) %>% mutate(Users_perMovie  = n())
+validation <- validation %>% group_by(movieId) %>% mutate(Users_perMovie = n())
+```
+
+I will add the average Rating per Movie to the Dataset.
+```{r}
+# Add the average rating per movie for each row
+edx <- edx %>% group_by(movieId) %>% mutate(Avg_rating_per_movie = mean(rating))
+validation <- validation %>% group_by(movieId) %>% mutate(Avg_rating_per_movie = mean(rating))
+```
+
+### User Dimension
+We could penalize users with low number of reviews.
+I will add this measure to the training set and test set - Number of Ratings per user
+```{r}
+edx <- edx %>% group_by(userId) %>% mutate(Movies_perUser = n())
+validation <- validation %>% group_by(userId) %>% mutate(Movies_perUser = n())
+```
+
+Number of rating per user 
+```{r , echo=FALSE}
+edx %>% group_by(Movies_perUser) %>%
+     summarize(avg_rating = mean(rating)) %>%
+     ggplot(aes(Movies_perUser, avg_rating)) +
+     geom_point() +
+     theme_hc() + 
+     geom_smooth() +
+     ggtitle("No. movies per User vs. Rating")
+```
+
+As mentioned earlier - We can see the lower the number of users per movie the higher the rating . 
+There is a slight bias due to not enough people rating the movie
+
+
+### Release Year 
+No. of movies per year
+```{r , echo=FALSE}
+edx %>%   group_by(releaseyear) %>%
+  summarize(count = n()) %>%
+  arrange(desc(count)) %>% ggplot(aes(releaseyear,count)) + 
+  geom_line(color="blue")+ 
+  labs(title = " No. of Movies by release year")+
+  theme(axis.text.x  = element_text(angle= 90, vjust = 50 ))+
+  theme_light()
+```
+
+View release year vs rating
+```{r , echo=FALSE}
+edx %>% group_by(releaseyear) %>%
+  summarize(rating = mean(rating)) %>%
+  ggplot(aes(releaseyear, rating)) +
+  geom_point() +
+  theme_hc() + 
+  geom_smooth() +
+  ggtitle("Release Year vs. Rating")
+```
+Older "classics" get higher ratings. This could allow us to penalize a movie based on release year
+by a calculated weight.
+
+### Age of Movie Analysis 
+Let’s check if there is a correlation between average rating per movie and age of movie. 
+```{r}
+avg_rating_per_age <- edx %>% 
+    group_by(movie_age) %>% summarize(avg_rating_by_age = mean(rating))
+avg_rating_per_age
+```
+
+```{r , echo=FALSE}
+#install.packages("ggpubr")
+library("ggpubr")
+ggscatter(avg_rating_per_age, x = "movie_age", y = "avg_rating_by_age", 
+          add = "reg.line", conf.int = TRUE, 
+          color = "avg_rating_by_age",
+          title = "Age of Movie vs Avg Rating - Correlation",
+          cor.coef = TRUE, cor.method = "pearson")
+```
+We can clearly notice that there is a positive trend. The older the movie the higher the ratings it receives.
+The age dimension will definitely have affect on predicting the rating.
+We can remove the release year as it is no longer needed.
+```{r}
+edx <- subset(edx, select = -c(releaseyear) )
+validation <- subset(validation, select = -c(releaseyear) )
+```
+
+### Year Rated Dimension
+Let’s check if there is a correlation between The year the movie was rated and the average rating. 
+```{r}
+avg_rating_per_timestamp_year <- edx %>% 
+    group_by(timestamp) %>% summarize(avg_rating = mean(rating))
+
+avg_rating_per_timestamp_year
+```
+```{r , echo=FALSE}
+ggscatter(avg_rating_per_timestamp_year, x = "timestamp", y = "avg_rating", 
+          add = "reg.line", conf.int = TRUE, 
+          title = "Year of Rating vs Avg Rating - Correlation",
+          cor.coef = TRUE, cor.method = "pearson")
+```
+We observe that the oldest rating was in 1995 given the highest rating – this is also an outlier.
+There is a slight downward trend with the remaining of the movies , showing that the older the rating the higher the avg rating.
+
+## DATA CLEANING
+
+Remove entries with no genres
+```{r}
+#remove entries with no genres
+edx_clean <- subset(edx, genres != "(no genres listed)")
+```
+
+Remove entries with timestamp year =1995
+```{r}
+edx_clean <- subset(edx_clean, timestamp != "1995")
+```
+
+## MODEL BUILDING & TRAINING
+
+Creating the training and testing datasets
+The course instructors provided a segment of code in order to download and clean the MovieLens 10M
+dataset. Originally, the given code separated the dataset into two subsets: the edx dataset, for training, and the
+validation dataset, for testing the final algorithm.
+
+It is important to note the instructions given:
+*IMPORTANT: Make sure you do NOT use the validation set (the final hold-out test set) to train your algorithm. The validation set (the final hold-out test set) should ONLY be used to test your final algorithm. You should split the edx data into a training and test set or use cross-validation.*
+
+From the exploration analysis,  it is also evident that the MovieLens dataset has a great deal of data, therefore the approach I take needs to ensure that my machine does not run out memory when running the algorithms and regression models to predict movie ratings.
+
+```{r}
+#Partition the edx data 
+library(caret)
+set.seed(1)
+test_index <- createDataPartition(y = edx_clean$rating, times = 1, p = 0.2, list = FALSE)
+train_set <- edx_clean[-test_index,]
+test_set <- edx_clean[test_index,]
+#to make sure we don't include users and movies in the test set that do not appear in 
+#the training set, we remove these entries using the semi_join function:
+test_set <- test_set %>% 
+  semi_join(train_set, by = "movieId") %>%
+  semi_join(train_set, by = "userId")
+
+```
+
+
+**RMSE**
+Before we proceed with the model building,training and validation we define the RMSE function
+
+```{r}
+RMSE <- function(true_ratings, predicted_ratings) {
+    sqrt(mean((true_ratings - predicted_ratings)^2)) }
+
+```
+
+**MODEL 1 - Simple Linear Regression**
+*"Simple linear regression is a statistical method that allows us to summarize and study relationships between two continuous (quantitative) variables"* ~ STATS ONLINE
+
+The first model is remarkably simple.
+Let us assume a linear equation across all movies and apply an Average rating regardless of the movie, user , genre or release year. No bias are considered.
+
+```{r}
+## Get Ave Rate across all movies
+Pred_1 <- mean(train_set$rating)
+Pred_1
+```
+
+```{r}
+## Average Rate across all movies (3.512) is used as a baseline
+Rmse_1 <- RMSE(test_set$rating,Pred_1)
+Rmse_1
+```
+The result RMSE for this model will not return a very accurate prediction, however it will be used as a starting point in which to better all other models.
+
+
+**MODEL 2 - Multilinear Regression **
+*"Multiple linear regression (MLR) is a statistical technique that uses several explanatory variables to predict the outcome of a response variable".* ~ INVESTOPEDIA
+
+The Multilinear Regression model will use all elements to predict the rating. 
+
+```{r}
+MLRregressor = lm(formula = rating ~ movieId + userId + movie_age + Users_perMovie + Avg_rating_per_movie + Movies_perUser ,
+                   data = train_set)
+summary(MLRregressor)
+```
+From the P value, we can see that all dimension used for the Regressor are highly statistically significant. 
+
+"Most authors refer to statistically significant as P < 0.05 and statistically highly significant as P < 0.001 (less than one in a thousand chance of being wrong)."- *REFERENCE https://www.statsdirect.com/help/basics/p_values.htm*
+
+```{r}
+## Average Rate across all movies (3.512) is used as a baseline
+Pred_2 = predict(MLRregressor, newdata = test_set)
+Rmse_2 <- RMSE( test_set$rating,Pred_2)
+Rmse_2
+```
+The RMSE is a lot lower that the first model, however I am going to still try other methods to get a lower RMSE.
+
+
+**MODEL 3 - K-Nearest Neighbors (K-NN)**
+*"An object is classified by a plurality vote of its neighbors, with the object being assigned to the class most common among its k nearest neighbors (k is a positive integer, typically small)"* ~ WIKIPEDIA
+
+In this example we are going to use only 2 dimensions to predict the ratings
+```{r}
+## Average Rate across all movies (3.512) is used as a baseline
+KNN_dataset = edx_clean %>% select(1,2,7,8,9,10,3)
+```
+
+```{r}
+# Splitting the dataset into the Training set and Test set
+KNN_test_index <- createDataPartition(y = KNN_dataset$rating, times = 1, p = 0.2, list = FALSE)
+KNN_train_set <- KNN_dataset[-test_index,]
+KNN_test_set <- KNN_dataset[test_index,]
+#to make sure we don’t include users and movies in the test set that do not appear in 
+#the training set, we remove these entries using the semi_join function:
+KNN_test_set <- KNN_test_set %>% 
+  semi_join(KNN_train_set, by = "movieId") %>%
+  semi_join(KNN_train_set, by = "userId")
+
+# Feature Scaling
+
+KNN_train_set[-7] = scale(KNN_train_set[-7])
+KNN_test_set[-7] = scale(KNN_test_set[-7])
+
+# Fitting K-NN to the Training set and Predicting the Test set results
+
+#train = KNN_train_set[, -7]
+#cl=KNN_train_set[, 7]
+#length(cl)
+#length(train)
+#library(class)
+#Pred_3 = knn(train = KNN_train_set[, -7, drop = FALSE],
+#            test = KNN_test_set[, -7, drop = FALSE],
+#            cl = KNN_train_set$rating,
+#             k = 5,
+##             prob = TRUE)
+# Rmse_3 <- RMSE( test_set$rating,Pred_3)
+```
+ Unfortunately my machine did not have enough memory to run this model :-( 
+ as well as Polynomial Regression model & Random Forest. 
+
+**MODEL 4 - Matrix Factorization (MF)**
+*"Matrix factorization is a class of collaborative filtering algorithms used in recommender systems. Matrix factorization algorithms work by decomposing the user-item interaction matrix into the product of two lower dimensionality rectangular matrices."* ~ WIKIPEDIA
+
+With some research, Matrix Factorization is one method most used for Recommendation Systems.  
+In comparison to the K-nearest-neighbours method, Matrix Factorization is often better in terms of prediction accuracy and time needed to train the model.
+The recosystem Package in R is specifically used for recommendation systems.
+```{r}
+# install.packages("recosystem")
+library(recosystem)
+set.seed(123)
+
+train_set_fac <- train_set %>% select(movieId, userId, rating, movie_age)
+test_set_fac <- test_set %>% select(movieId, userId, rating, movie_age)
+
+train_set_fac <- as.matrix(train_set_fac)
+test_set_fac <- as.matrix(test_set_fac)
+
+write.table(train_set_fac, file = "edx_train_set.txt", sep = " ", 
+            row.names = FALSE, col.names = FALSE)
+
+write.table(test_set_fac, file = "edx_test_set.txt", sep = " ", 
+            row.names = FALSE, col.names = FALSE)
+
+set.seed(1)
+MF_train_dataset <- data_file("edx_train_set.txt")
+MF_test_dataset <- data_file("edx_test_set.txt")
+
+# Create a model object (a Reference Class object in R) by calling Reco().
+recommender <- Reco()
+
+# Call the $tune() method to select best tuning parameters along a set of candidate values.
+opts = recommender$tune(MF_train_dataset, opts = list(dim = c(10, 20, 30), lrate = c(0.1, 0.2), 
+        costp_l1 = 0, costq_l1 = 0, nthread = 1, niter = 10))
+opts
+
+# Train the model by calling the $train() method. 
+# A number of parameters can be set inside the function, possibly coming from the result of $tune().
+
+recommender$train(MF_train_dataset, opts = c(opts$min, nthread = 1, niter = 20))
+
+## Use the $predict() method to compute predicted values.
+## Write predictions to file
+pred_file <- tempfile()
+recommender$predict(MF_test_dataset, out_file(pred_file))
+
+print(scan(pred_file, n = 20))
+
+edx_test_ratings <- read.table("edx_test_set.txt", header = FALSE, sep = " ")$V3
+
+pred_ratings <- scan(pred_file)
+
+# will calculate RMSE
+Rmse_4 <- RMSE(edx_test_ratings, pred_ratings)
+Rmse_4
+
+
+#Final Test on validation Set
+validation_fac <- validation %>% select(movieId, userId, rating, movie_age)
+validation_fac <- as.matrix(validation_fac)
+
+write.table(validation_fac, file = "validation_set.txt", sep = " ", 
+            row.names = FALSE, col.names = FALSE)
+
+MF_validation_dataset <- data_file("validation_set.txt")
+recommender <- Reco()
+
+recommender$train(MF_train_dataset, opts = c(opts$min, nthread = 1, niter = 20))
+
+pred_file <- tempfile()
+recommender$predict(MF_validation_dataset, out_file(pred_file))
+real_ratings <- read.table("validation_set.txt", header = FALSE, sep = " ")$V3
+pred_ratings <- scan(pred_file)
+Final_Rmse <- RMSE(real_ratings, pred_ratings)
+Final_Rmse
+```
+We observe that the RMSE is much lower than all other models used. Therefore, the Matrix factorization may be the best approach to create a recommendation system.
+
+
+## CONCLUSION
+After trying a few different approaches (Polynominal Regression, Random Forest) I have come to the conclusion that, due to the size of the data, some algorithms were very resource heavy and unable to run. 
+I believe a machine used for machine learning would probably be equipped with better resources. However, the Recosystem is a fairly good choice for the MovieLens dataset and yielded the lowest RMSE compared to other algorithims.
+
+Further investigations and appling algorithms with more dimension that could be added to the dataset, may yield better results such as: 
+**Such as**
++ Genre 
++ Budget of movie
++ User demographics - age, gender, interests etc.
++ Director, Actors.
+ 
+Thank you for taking the time to read my report
+
+
+
+## REFERENCES
+
+*https://www.statsdirect.com/help/basics/p_values.htm*
+
+*https://towardsdatascience.com/understanding-matrix-factorization-for-recommender-systems-4d3c5e67f2c9*
+
+*https://cran.r-project.org/web/packages/recosystem/vignettes/introduction.html*
+
+*https://www.csie.ntu.edu.tw/~cjlin/papers/libmf/mf_adaptive_pakdd.pdf*
+
+
+
